@@ -59,6 +59,8 @@ pub const Status = enum {
 pub const ReplicaEvent = union(enum) {
     message_sent: *const Message,
     state_machine_opened,
+    suspicion_raised: struct { view: u32 },
+    view_change_completed: struct { view: u32 },
     /// Called immediately after a prepare is committed by the state machine.
     committed: struct {
         prepare: *const Message.Prepare,
@@ -1628,6 +1630,9 @@ pub fn ReplicaType(
                         },
                     );
                     self.send_exit_view();
+                    if (self.event_callback) |hook| {
+                        hook(self, .{ .suspicion_raised = .{ .view = self.view } });
+                    }
                     self.commit_fault.signal(now);
                 }
             }
@@ -10064,6 +10069,9 @@ pub fn ReplicaType(
             assert(self.view_headers.command == .view);
 
             self.status = .normal;
+            if (self.event_callback) |hook| {
+                hook(self, .{ .view_change_completed = .{ .view = view_new } });
+            }
             self.commit_fault.reset(self.clock.monotonic());
 
             if (self.primary()) {

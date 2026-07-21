@@ -36,6 +36,11 @@ pub const ReplicaHealth = union(enum) {
     reformatting,
 };
 
+pub const ReplicaViewChangeEvent = union(enum) {
+    suspicion_raised: struct { view: u32 },
+    view_change_completed: struct { view: u32 },
+};
+
 pub const Release = struct {
     release: vsr.Release,
     release_client_min: vsr.Release,
@@ -111,6 +116,13 @@ pub fn ClusterType(comptime StateMachineType: anytype) type {
                 client: usize,
                 request: *const Message.Request,
                 reply: *const Message.Reply,
+            ) void = null,
+
+            /// Invoked when a replica raises or completes a view-change suspicion.
+            on_view_change_event: ?*const fn (
+                cluster: *Cluster,
+                replica_index: u8,
+                event: ReplicaViewChangeEvent,
             ) void = null,
         };
 
@@ -996,8 +1008,8 @@ pub fn ClusterType(comptime StateMachineType: anytype) type {
 
             cluster.client_eviction_requests_cancelled +=
                 @intFromBool(client.request_inflight != null and
-                client.request_inflight.?.message.header.operation != .register and
-                client.request_inflight.?.message.header.operation != .noop);
+                    client.request_inflight.?.message.header.operation != .register and
+                    client.request_inflight.?.message.header.operation != .noop);
         }
 
         fn on_replica_event(replica: *const Replica, event: vsr.ReplicaEvent) void {
@@ -1010,6 +1022,20 @@ pub fn ClusterType(comptime StateMachineType: anytype) type {
                 },
                 .state_machine_opened => {
                     cluster.manifest_checker.forest_open(&replica.state_machine.forest);
+                },
+                .suspicion_raised => |data| {
+                    if (cluster.callbacks.on_view_change_event) |on_view_change_event| {
+                        on_view_change_event(cluster, replica.replica, .{
+                            .suspicion_raised = .{ .view = data.view },
+                        });
+                    }
+                },
+                .view_change_completed => |data| {
+                    if (cluster.callbacks.on_view_change_event) |on_view_change_event| {
+                        on_view_change_event(cluster, replica.replica, .{
+                            .view_change_completed = .{ .view = data.view },
+                        });
+                    }
                 },
                 .committed => |data| {
                     assert(data.reply.header.client == data.prepare.header.client);

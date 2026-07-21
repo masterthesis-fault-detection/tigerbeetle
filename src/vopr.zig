@@ -30,11 +30,13 @@ const StateMachineType = switch (state_machine) {
 
 const Cluster = @import("testing/cluster.zig").ClusterType(StateMachineType);
 const Release = @import("testing/cluster.zig").Release;
+const ReplicaViewChangeEvent = @import("testing/cluster.zig").ReplicaViewChangeEvent;
 const StateMachine = Cluster.StateMachine;
 const Failure = @import("testing/cluster.zig").Failure;
 const PartitionMode = @import("testing/packet_simulator.zig").PartitionMode;
 const PartitionSymmetry = @import("testing/packet_simulator.zig").PartitionSymmetry;
-const Core = @import("testing/cluster/network.zig").Network.Core;
+const Network = @import("testing/cluster/network.zig").Network;
+const Core = Network.Core;
 const ReplySequence = @import("testing/reply_sequence.zig").ReplySequence;
 const Message = @import("message_pool.zig").MessagePool.Message;
 
@@ -56,6 +58,29 @@ const releases = [_]Release{
 };
 
 const log = std.log.scoped(.simulator);
+
+const ViewChangeClassification = enum {
+    true_positive,
+    false_positive,
+};
+
+const ViewChangeCause = enum {
+    primary_down,
+    partitioned,
+    connected,
+    unreachable_or_slow,
+};
+
+const ViewChangeEvent = struct {
+    view_old: u32,
+    view_new: u32,
+    primary_suspected: u8,
+    tick_suspicion: u64,
+    tick_completed: ?u64 = null,
+    superseded: bool = false,
+    classification: ViewChangeClassification,
+    cause: ViewChangeCause,
+};
 
 pub const std_options: std.Options = .{
     // The -vopr-log=<full|short> build option selects two logging modes.
@@ -368,6 +393,7 @@ pub fn main() !void {
         log.debug("\nMessages:\n{}", .{simulator.cluster.network.message_summary});
     }
 
+    simulator.print_view_change_metrics(seed);
     log.info("\n          PASSED ({} ticks)", .{tick_total});
 }
 
@@ -707,6 +733,13 @@ pub const Simulator = struct {
     /// Fully-connected subgraph of replicas for liveness checking.
     core: Core = .{},
 
+    /// Current simulator tick count.
+    tick_current: u64 = 0,
+
+    /// Open and completed view-change observations.
+    view_change_events: std.ArrayList(ViewChangeEvent) = undefined,
+    view_change_event_index: std.AutoHashMap(u32, usize) = undefined,
+
     /// Total number of requests sent, including those that have not been delivered.
     /// Does not include `register` messages.
     requests_sent: usize = 0,
@@ -732,6 +765,7 @@ pub const Simulator = struct {
             .callbacks = .{
                 .on_cluster_reply = on_cluster_reply,
                 .on_client_reply = on_client_reply,
+                .on_view_change_event = on_view_change_event,
             },
         });
         errdefer cluster.deinit();
@@ -756,6 +790,11 @@ pub const Simulator = struct {
         var reply_sequence = try ReplySequence.init(gpa);
         errdefer reply_sequence.deinit(gpa);
 
+        var view_change_events = std.ArrayList(ViewChangeEvent).init(gpa);
+        errdefer view_change_events.deinit();
+        var view_change_event_index = std.AutoHashMap(u32, usize).init(gpa);
+        errdefer view_change_event_index.deinit();
+
         return Simulator{
             .prng = prng,
             .options = options,
@@ -764,6 +803,8 @@ pub const Simulator = struct {
             .replica_releases = replica_releases,
             .replica_crash_stability = replica_crash_stability,
             .reply_sequence = reply_sequence,
+            .view_change_events = view_change_events,
+            .view_change_event_index = view_change_event_index,
         };
     }
 
@@ -771,6 +812,8 @@ pub const Simulator = struct {
         gpa.free(simulator.replica_releases);
         gpa.free(simulator.replica_crash_stability);
         simulator.reply_sequence.deinit(gpa);
+        simulator.view_change_events.deinit();
+        simulator.view_change_event_index.deinit();
         simulator.workload.deinit(gpa);
         simulator.cluster.deinit();
     }
@@ -842,6 +885,7 @@ pub const Simulator = struct {
     pub fn tick(simulator: *Simulator) void {
         // TODO(Zig): Remove (see on_cluster_reply()).
         simulator.cluster.context = simulator;
+        simulator.tick_current += 1;
 
         simulator.cluster.tick();
         simulator.tick_requests();
@@ -1332,6 +1376,123 @@ pub const Simulator = struct {
         return release_max;
     }
 
+    fn on_view_change_event(
+        cluster: *Cluster,
+        replica_index: u8,
+        event: ReplicaViewChangeEvent,
+    ) void {
+        const simulator: *Simulator = @ptrCast(@alignCast(cluster.context.?));
+
+        switch (event) {
+            .suspicion_raised => |data| {
+                const view_new = data.view + 1;
+                if (simulator.view_change_event_index.get(view_new)) |_| {
+                    return;
+                }
+                const primary_suspected: u8 = @intCast(@mod(data.view, cluster.options.replica_count));
+
+                const path_to_primary = Network.Path{
+                    .source = .{ .replica = replica_index },
+                    .target = .{ .replica = primary_suspected },
+                };
+                const path_from_primary = Network.Path{
+                    .source = .{ .replica = primary_suspected },
+                    .target = .{ .replica = replica_index },
+                };
+                const primary_unreachable = cluster.replica_health[primary_suspected] == .down or
+                    cluster.network.link_filter(path_to_primary).bits.count() == 0 or
+                    cluster.network.link_filter(path_from_primary).bits.count() == 0;
+
+                const event_entry = ViewChangeEvent{
+                    .view_old = data.view,
+                    .view_new = view_new,
+                    .primary_suspected = primary_suspected,
+                    .tick_suspicion = simulator.tick_current,
+                    .tick_completed = null,
+                    .superseded = false,
+                    .classification = if (primary_unreachable)
+                        .true_positive
+                    else
+                        .false_positive,
+                    .cause = if (cluster.replica_health[primary_suspected] == .down)
+                        .primary_down
+                    else if (primary_unreachable)
+                        .partitioned
+                    else blk: {
+                        var observed_partition = false;
+                        var observed_connected = false;
+                        const node_count = cluster.options.replica_count + cluster.options.standby_count;
+                        for (0..node_count) |other_index| {
+                            if (other_index == replica_index) continue;
+                            const other_replica: u8 = @intCast(other_index);
+                            const path_from = Network.Path{
+                                .source = .{ .replica = replica_index },
+                                .target = .{ .replica = other_replica },
+                            };
+                            const path_to = Network.Path{
+                                .source = .{ .replica = other_replica },
+                                .target = .{ .replica = replica_index },
+                            };
+                            if (cluster.network.link_filter(path_from).bits.count() == 0) {
+                                observed_partition = true;
+                            } else {
+                                observed_connected = true;
+                            }
+                            if (cluster.network.link_filter(path_to).bits.count() == 0) {
+                                observed_partition = true;
+                            } else {
+                                observed_connected = true;
+                            }
+                        }
+                        break :blk if (observed_partition and !observed_connected)
+                            .partitioned
+                        else if (!observed_partition and observed_connected)
+                            .connected
+                        else
+                            .unreachable_or_slow;
+                    },
+                };
+
+                log.debug(
+                    "vc suspicion: tick={} view_old={} view_new={} primary={} health={} classification={}",
+                    .{
+                        simulator.tick_current,
+                        event_entry.view_old,
+                        event_entry.view_new,
+                        event_entry.primary_suspected,
+                        @tagName(cluster.replica_health[event_entry.primary_suspected]),
+                        @tagName(event_entry.classification),
+                    },
+                );
+
+                if (event_entry.classification == .false_positive and event_entry.cause == .connected) {
+                    // Keep the inferred cause as connected when the suspected primary is still reachable.
+                }
+
+                simulator.view_change_events.append(event_entry) catch unreachable;
+                simulator.view_change_event_index.put(view_new, simulator.view_change_events.items.len - 1) catch unreachable;
+
+                for (simulator.view_change_events.items) |*existing| {
+                    if (existing.tick_completed != null or existing.superseded) continue;
+                    if (existing.view_new < view_new) {
+                        existing.superseded = true;
+                        _ = simulator.view_change_event_index.remove(existing.view_new);
+                    }
+                }
+            },
+            .view_change_completed => |data| {
+                const view_new = data.view;
+                if (simulator.view_change_event_index.get(view_new)) |index| {
+                    const event_entry = &simulator.view_change_events.items[index];
+                    if (event_entry.tick_completed == null and !event_entry.superseded) {
+                        event_entry.tick_completed = simulator.tick_current;
+                        _ = simulator.view_change_event_index.remove(view_new);
+                    }
+                }
+            },
+        }
+    }
+
     fn on_cluster_reply(
         cluster: *Cluster,
         reply_client: ?usize,
@@ -1407,6 +1568,126 @@ pub const Simulator = struct {
         if (!request.header.operation.vsr_reserved()) {
             simulator.requests_replied += 1;
         }
+    }
+
+    fn print_view_change_metrics(simulator: *const Simulator, seed: u64) void {
+        const stats = struct {
+            count: usize = 0,
+            completed: usize = 0,
+            ttr_ticks: std.ArrayList(u64) = undefined,
+        }{};
+        _ = stats;
+
+        const summary = struct {
+            count: usize = 0,
+            min: ?u64 = null,
+            mean: ?u64 = null,
+            median: ?u64 = null,
+            p95: ?u64 = null,
+            max: ?u64 = null,
+        }{};
+        _ = summary;
+
+        const total_count = simulator.view_change_events.items.len;
+        var tp_values = std.ArrayList(u64).init(std.heap.page_allocator);
+        defer tp_values.deinit();
+        var fp_values = std.ArrayList(u64).init(std.heap.page_allocator);
+        defer fp_values.deinit();
+
+        var tp_unresolved: usize = 0;
+        var fp_unresolved: usize = 0;
+        var superseded_count: usize = 0;
+
+        for (simulator.view_change_events.items) |event| {
+            if (event.tick_completed) |completed_tick| {
+                const ttr = completed_tick - event.tick_suspicion;
+                switch (event.classification) {
+                    .true_positive => tp_values.append(ttr) catch unreachable,
+                    .false_positive => fp_values.append(ttr) catch unreachable,
+                }
+            } else if (event.superseded) {
+                superseded_count += 1;
+            } else {
+                switch (event.classification) {
+                    .true_positive => tp_unresolved += 1,
+                    .false_positive => fp_unresolved += 1,
+                }
+            }
+        }
+
+        const print_stats = struct {
+            fn run(values: []const u64, comptime label: []const u8) void {
+                if (values.len == 0) {
+                    log.info("  {s}: count=0", .{label});
+                    return;
+                }
+
+                var sorted = std.ArrayList(u64).init(std.heap.page_allocator);
+                defer sorted.deinit();
+                sorted.appendSlice(values) catch unreachable;
+                std.sort.block(u64, sorted.items, {}, std.sort.asc(u64));
+
+                var sum: u64 = 0;
+                for (sorted.items) |value| sum += value;
+                const mean = sum / sorted.items.len;
+                const median = sorted.items[sorted.items.len / 2];
+                const p95_index = @divFloor(sorted.items.len * 95, 100);
+                const p95 = sorted.items[@min(p95_index, sorted.items.len - 1)];
+                const min = sorted.items[0];
+                const max = sorted.items[sorted.items.len - 1];
+
+                log.info(
+                    "  {s}: count={} min_ticks={} mean_ticks={} median_ticks={} p95_ticks={} max_ticks={} min_ms={} mean_ms={} median_ms={} p95_ms={} max_ms={}",
+                    .{
+                        label,
+                        sorted.items.len,
+                        min,
+                        mean,
+                        median,
+                        p95,
+                        max,
+                        min * constants.tick_ms,
+                        mean * constants.tick_ms,
+                        median * constants.tick_ms,
+                        p95 * constants.tick_ms,
+                        max * constants.tick_ms,
+                    },
+                );
+            }
+        };
+
+        log.info("view-change summary (seed={})", .{seed});
+        print_stats.run(tp_values.items, "true_positive");
+        print_stats.run(fp_values.items, "false_positive");
+        log.info("  unresolved: true_positive={} false_positive={}", .{ tp_unresolved, fp_unresolved });
+        log.info("  superseded={}", .{superseded_count});
+        log.info(
+            "VOPR_METRICS seed={} total_vc={} tp={} fp={} superseded={} unresolved={} tp_ttr_mean_ticks={} fp_ttr_mean_ticks={}",
+            .{
+                seed,
+                total_count,
+                tp_values.items.len,
+                fp_values.items.len,
+                superseded_count,
+                tp_unresolved + fp_unresolved,
+                if (tp_values.items.len == 0) 0 else @divFloor(
+                    blk: {
+                        var sum: u64 = 0;
+                        for (tp_values.items) |value| sum += value;
+                        break :blk sum;
+                    },
+                    tp_values.items.len,
+                ),
+                if (fp_values.items.len == 0) 0 else @divFloor(
+                    blk: {
+                        var sum: u64 = 0;
+                        for (fp_values.items) |value| sum += value;
+                        break :blk sum;
+                    },
+                    fp_values.items.len,
+                ),
+            },
+        );
     }
 
     /// Maybe send a request from one of the cluster's clients.
