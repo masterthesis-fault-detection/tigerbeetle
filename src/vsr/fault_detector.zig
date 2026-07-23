@@ -39,8 +39,11 @@ last_unstable: Instant,
 
 const FaultDetector = @This();
 
-const alert_factor_min = 4;
-const alert_factor_max = 8;
+const alert_factor_step_denom = 2; // step_size is 1/alert_factor_step_denom
+const alert_factor_min = 2;
+const alert_factor_max = 3;
+const alert_factor_init = 2;
+
 const stable_duration = Duration{ .ns = 100 * std.time.ns_per_s };
 
 pub fn init(options: struct {
@@ -51,13 +54,15 @@ pub fn init(options: struct {
     assert(options.interval_min.ns < options.interval_max.ns);
     // Sanity check and overflow protection for ewma.
     assert(options.interval_max.ns <= 10 * std.time.ns_per_hour);
+    assert(alert_factor_init >= alert_factor_min);
+    assert(alert_factor_init <= alert_factor_max);
     return .{
         .interval_min = options.interval_min,
         .interval_max = options.interval_max,
 
         .signal_last = options.now,
         .interval_ewma = options.interval_max,
-        .alert_factor = 6,
+        .alert_factor = alert_factor_init * alert_factor_step_denom,
         .last_unstable = options.now,
     };
 }
@@ -101,14 +106,14 @@ pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red }
 
     if (elapsed.ns *| 2 <= detector.interval_ewma.ns * 3) { // interval <= 1.5 * interval_ewma
         if (detector.last_unstable.elapsed(now).ns >= stable_duration.ns) {
-            detector.alert_factor = @max(detector.alert_factor - 1, alert_factor_min);
+            detector.alert_factor = @max(detector.alert_factor - 1, alert_factor_min * alert_factor_step_denom);
             detector.last_unstable = now;
         }
         return .green;
     }
     assert(elapsed.ns >= detector.interval_ewma.ns);
     detector.last_unstable = now;
-    if (elapsed.ns <= detector.interval_ewma.ns * 3) {
+    if (elapsed.ns *| alert_factor_step_denom <= detector.interval_ewma.ns * detector.alert_factor) { // interval <= alert_factor * interval_ewma
         return .yellow;
     }
     assert(elapsed.ns > detector.interval_ewma.ns);
@@ -131,7 +136,7 @@ pub fn reset(detector: *FaultDetector, now: Instant) void {
 /// Does not affect the view-change protocol; only informs the failure detector.
 pub fn on_false_positive(detector: *FaultDetector, now: Instant) void {
     detector.last_unstable = now;
-    detector.alert_factor = @min(detector.alert_factor + 1, alert_factor_max);
+    detector.alert_factor = @min(detector.alert_factor + 1, alert_factor_max * alert_factor_step_denom);
     // TODO: improve failure-detection accuracy using confirmed false positives.
 }
 
