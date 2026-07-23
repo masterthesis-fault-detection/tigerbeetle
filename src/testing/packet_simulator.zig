@@ -424,6 +424,31 @@ pub fn PacketSimulatorType(comptime Packet: type) type {
             packet: Packet,
             path: Path,
         ) void {
+            const command = self.packet_command(packet);
+
+            // `false_positive` is advisory FD feedback only. Delivering it on the normal
+            // simulated path would (1) compete for path_maximum_capacity and evict protocol
+            // messages such as commits, and (2) consume PRNG draws for delay/loss/eviction,
+            // diverging the entire VOPR trajectory. Keep partition filters, skip the rest.
+            if (command == .false_positive) {
+                const link = &self.links[self.path_index(path)];
+                if (link.should_drop(packet, command)) {
+                    log.debug("dropped false_positive (link filter): from={} to={}", .{
+                        path.source,
+                        path.target,
+                    });
+                    self.packet_deinit(packet);
+                    return;
+                }
+                log.debug("delivering false_positive out-of-band from={} to={}", .{
+                    path.source,
+                    path.target,
+                });
+                self.packet_deliver(packet, path);
+                self.packet_deinit(packet);
+                return;
+            }
+
             const queue = &self.links[self.path_index(path)].queue;
             const queue_count = queue.count();
             if (queue_count + 1 > self.options.path_maximum_capacity) {
@@ -444,7 +469,6 @@ pub fn PacketSimulatorType(comptime Packet: type) type {
                 .packet = packet,
             }) catch unreachable;
 
-            const command = self.packet_command(packet);
             const recording = self.links[self.path_index(path)].record.contains(command);
             if (recording) {
                 self.recorded.addOneAssumeCapacity().* = .{

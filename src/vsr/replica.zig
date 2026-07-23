@@ -2562,10 +2562,13 @@ pub fn ReplicaType(
 
             // Advisory only: tell the sender that this primary is still alive.
             // Does not affect exit_view quorum counting or view-change.
+            // Reply once per sender until the exit_view window resets, to avoid
+            // amplifying network traffic on EV retries.
             if (self.status == .normal and
                 self.primary() and
                 !self.primary_abdicating and
-                message.header.replica != self.replica)
+                message.header.replica != self.replica and
+                !self.exit_view_from_all_replicas.is_set(message.header.replica))
             {
                 self.send_false_positive(message.header.replica);
             }
