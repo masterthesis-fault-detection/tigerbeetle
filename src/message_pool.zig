@@ -117,6 +117,7 @@ pub const MessagePool = struct {
         pub const Reply = CommandMessageType(.reply);
         pub const Commit = CommandMessageType(.commit);
         pub const ExitView = CommandMessageType(.exit_view);
+        pub const FalsePositive = CommandMessageType(.false_positive);
         pub const JoinView = CommandMessageType(.join_view);
         pub const View = CommandMessageType(.view);
         pub const GetView = CommandMessageType(.get_view);

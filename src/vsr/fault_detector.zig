@@ -34,8 +34,14 @@ interval_max: Duration,
 
 signal_last: Instant,
 interval_ewma: Duration,
+alert_factor: u32,
+last_unstable: Instant,
 
 const FaultDetector = @This();
+
+const alert_factor_min = 4;
+const alert_factor_max = 8;
+const stable_duration = Duration{ .ns = 100 * std.time.ns_per_s };
 
 pub fn init(options: struct {
     now: Instant,
@@ -51,6 +57,8 @@ pub fn init(options: struct {
 
         .signal_last = options.now,
         .interval_ewma = options.interval_max,
+        .alert_factor = 6,
+        .last_unstable = options.now,
     };
 }
 
@@ -83,15 +91,23 @@ pub fn signal(detector: *FaultDetector, now: Instant) void {
 /// process, and then compute the actual probability of primary being dead using Bayes' rule. We
 /// don't do that, because we don't know the actual underlying model. A simple rule like the above
 /// will not give us the optimal answer, but it should work in variety of different contexts!
+///
+/// As a side effect, tracks stability: after `stable_duration` with no yellow/red/false-positive,
+/// `alert_factor` decays by 1 (down to `alert_factor_min`).
 pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red } {
     const past = detector.signal_last;
     assert(past.ns <= now.ns);
     const elapsed = past.elapsed(now);
 
     if (elapsed.ns *| 2 <= detector.interval_ewma.ns * 3) { // interval <= 1.5 * interval_ewma
+        if (detector.last_unstable.elapsed(now).ns >= stable_duration.ns) {
+            detector.alert_factor = @max(detector.alert_factor - 1, alert_factor_min);
+            detector.last_unstable = now;
+        }
         return .green;
     }
     assert(elapsed.ns >= detector.interval_ewma.ns);
+    detector.last_unstable = now;
     if (elapsed.ns <= detector.interval_ewma.ns * 3) {
         return .yellow;
     }
@@ -102,11 +118,21 @@ pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red }
 pub fn reset(detector: *FaultDetector, now: Instant) void {
     const past = detector.signal_last;
     assert(past.ns <= now.ns);
+    const alert_factor = detector.alert_factor;
     detector.* = FaultDetector.init(.{
         .now = now,
         .interval_min = detector.interval_min,
         .interval_max = detector.interval_max,
     });
+    detector.alert_factor = alert_factor;
+}
+
+/// Called when the primary confirms it is still alive after this replica sent `exit_view`.
+/// Does not affect the view-change protocol; only informs the failure detector.
+pub fn on_false_positive(detector: *FaultDetector, now: Instant) void {
+    detector.last_unstable = now;
+    detector.alert_factor = @min(detector.alert_factor + 1, alert_factor_max);
+    // TODO: improve failure-detection accuracy using confirmed false positives.
 }
 
 fn ewma_add_duration(old: Duration, new: Duration) Duration {

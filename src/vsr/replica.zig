@@ -1814,6 +1814,7 @@ pub fn ReplicaType(
                 .reply => |m| self.on_reply(m),
                 .commit => |m| self.on_commit(m),
                 .exit_view => |m| self.on_exit_view(m),
+                .false_positive => |m| self.on_false_positive(m),
                 .join_view => |m| self.on_join_view(m),
                 .view => |m| self.on_view(m),
                 .get_view => |m| self.on_get_view(m),
@@ -2559,6 +2560,16 @@ pub fn ReplicaType(
             assert(self.status == .normal or self.status == .view_change);
             assert(message.header.view == self.view);
 
+            // Advisory only: tell the sender that this primary is still alive.
+            // Does not affect exit_view quorum counting or view-change.
+            if (self.status == .normal and
+                self.primary() and
+                !self.primary_abdicating and
+                message.header.replica != self.replica)
+            {
+                self.send_false_positive(message.header.replica);
+            }
+
             // Wait until we have a view-change quorum of messages (possibly including ourself).
             // This ensures that we do not start a view-change while normal request processing
             // is possible.
@@ -2594,6 +2605,54 @@ pub fn ReplicaType(
 
             self.transition_to_view_change_status(self.view + 1);
             assert(self.exit_view_from_all_replicas.empty());
+        }
+
+        /// Advisory failure-detector feedback from the primary: our `exit_view` was a false
+        /// positive because the primary is still alive. Does not affect view-change state.
+        fn on_false_positive(self: *Replica, message: *const Message.FalsePositive) void {
+            assert(message.header.command == .false_positive);
+
+            if (self.standby()) {
+                log.warn("{}: on_false_positive: misdirected message (standby)", .{
+                    self.log_prefix(),
+                });
+                return;
+            }
+
+            if (self.status != .normal) {
+                log.debug("{}: on_false_positive: ignoring (status={})", .{
+                    self.log_prefix(),
+                    self.status,
+                });
+                return;
+            }
+
+            if (self.primary()) {
+                log.warn("{}: on_false_positive: misdirected message (primary)", .{
+                    self.log_prefix(),
+                });
+                return;
+            }
+
+            if (message.header.view != self.view) {
+                log.debug("{}: on_false_positive: ignoring (view={} message.view={})", .{
+                    self.log_prefix(),
+                    self.view,
+                    message.header.view,
+                });
+                return;
+            }
+
+            if (message.header.replica != self.primary_index(self.view)) {
+                log.warn("{}: on_false_positive: ignoring (not from primary)", .{
+                    self.log_prefix(),
+                });
+                return;
+            }
+
+            assert(self.backup());
+            assert(message.header.view == self.view);
+            self.commit_fault.on_false_positive(self.clock.monotonic());
         }
 
         /// JV serves two purposes:
@@ -8785,6 +8844,23 @@ pub fn ReplicaType(
             }
         }
 
+        fn send_false_positive(self: *Replica, replica: u8) void {
+            assert(self.status == .normal);
+            assert(self.primary());
+            assert(!self.primary_abdicating);
+            assert(!self.solo());
+            assert(!self.standby());
+            assert(replica != self.replica);
+            assert(replica < self.replica_count);
+
+            self.send_header_to_replica(replica, @bitCast(Header.FalsePositive{
+                .command = .false_positive,
+                .cluster = self.cluster,
+                .replica = self.replica,
+                .view = self.view,
+            }));
+        }
+
         fn send_join_view(self: *Replica) void {
             assert(self.status == .view_change);
             assert(!self.solo());
@@ -9059,6 +9135,7 @@ pub fn ReplicaType(
                 .prepare,
                 .prepare_ok,
                 .exit_view,
+                .false_positive,
                 .join_view,
                 .view,
                 .headers,
@@ -9221,6 +9298,16 @@ pub fn ReplicaType(
                     assert(self.status == .normal or self.status == .view_change);
                     assert(header.view == self.view);
                     assert(header.replica == self.replica);
+                    assert(header.release.value == vsr.Release.zero.value);
+                },
+                .false_positive => |header| {
+                    assert(!self.standby());
+                    assert(self.status == .normal);
+                    assert(self.primary());
+                    assert(!self.primary_abdicating);
+                    assert(header.view == self.view);
+                    assert(header.replica == self.replica);
+                    assert(header.replica != replica);
                     assert(header.release.value == vsr.Release.zero.value);
                 },
                 .join_view => |header| {

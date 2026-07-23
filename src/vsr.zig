@@ -262,6 +262,10 @@ pub const Command = enum(u8) {
 
     view = 24,
 
+    /// Primary → backup advisory that an `exit_view` was a false positive (primary still alive).
+    /// Does not participate in the view-change protocol; only informs the failure detector.
+    false_positive = 25,
+
     // If a command is removed from the protocol, its ordinal is added here and can't be re-used.
     deprecated_12 = 12, // .view without checkpoint
     deprecated_21 = 21, // .request_sync_checkpoint

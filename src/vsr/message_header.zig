@@ -88,6 +88,7 @@ pub const Header = extern struct {
             .reply => Reply,
             .commit => Commit,
             .exit_view => ExitView,
+            .false_positive => FalsePositive,
             .join_view => JoinView,
             .view => View,
             .get_view => GetView,
@@ -220,6 +221,7 @@ pub const Header = extern struct {
             .prepare_ok,
             .commit,
             .exit_view,
+            .false_positive,
             .join_view,
             .view,
             .get_view,
@@ -1126,6 +1128,45 @@ pub const Header = extern struct {
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
             assert(self.command == .exit_view);
+            if (self.size != @sizeOf(Header)) return "size != @sizeOf(Header)";
+            if (self.checksum_body != checksum_body_empty) return "checksum_body != expected";
+            if (self.release.value != 0) return "release != 0";
+            if (!stdx.zeroed(&self.reserved)) return "reserved != 0";
+            return null;
+        }
+    };
+
+    pub const FalsePositive = extern struct {
+        checksum: u128 = 0,
+        checksum_padding: u128 = 0,
+        checksum_body: u128 = 0,
+        checksum_body_padding: u128 = 0,
+        nonce_reserved: u128 = 0,
+        cluster: u128,
+        size: u32 = @sizeOf(Header),
+        epoch: u32 = 0,
+        view: u32,
+        release: vsr.Release = vsr.Release.zero, // Always 0.
+        protocol: u16 = vsr.Version,
+        command: Command,
+        replica: u8,
+        reserved_frame: [12]u8 = @splat(0),
+
+        reserved: [128]u8 = @splat(0),
+
+        pub const frame = HeaderFunctionsType(@This()).frame;
+        pub const frame_const = HeaderFunctionsType(@This()).frame_const;
+        pub const invalid = HeaderFunctionsType(@This()).invalid;
+        pub const calculate_checksum = HeaderFunctionsType(@This()).calculate_checksum;
+        pub const calculate_checksum_body = HeaderFunctionsType(@This()).calculate_checksum_body;
+        pub const set_checksum = HeaderFunctionsType(@This()).set_checksum;
+        pub const set_checksum_body = HeaderFunctionsType(@This()).set_checksum_body;
+        pub const valid_checksum = HeaderFunctionsType(@This()).valid_checksum;
+        pub const valid_checksum_body = HeaderFunctionsType(@This()).valid_checksum_body;
+        pub const format = HeaderFunctionsType(@This()).format;
+
+        fn invalid_header(self: *const @This()) ?[]const u8 {
+            assert(self.command == .false_positive);
             if (self.size != @sizeOf(Header)) return "size != @sizeOf(Header)";
             if (self.checksum_body != checksum_body_empty) return "checksum_body != expected";
             if (self.release.value != 0) return "release != 0";
