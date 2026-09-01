@@ -2434,7 +2434,7 @@ pub fn ReplicaType(
             // Old/duplicate heartbeats don't count.
             if (self.heartbeat_timestamp < message.header.timestamp_monotonic) {
                 self.heartbeat_timestamp = message.header.timestamp_monotonic;
-                self.commit_fault.signal(self.clock.monotonic());
+                self.commit_fault.heartbeat(self.clock.monotonic());
                 if (!self.standby()) {
                     self.exit_view_from_all_replicas.unset(self.replica);
                 }
@@ -11446,7 +11446,7 @@ pub fn ReplicaType(
             // a replica doesn't let commit_fault to be red without an action.
             // It wouldn't be wrong to _not_ signal, but keeping the two code
             // paths orthogonal is cleaner.
-            self.commit_fault.signal(now);
+            self.commit_fault.heartbeat(now);
             if (self.primary_abdicating) {
                 assert(self.primary_abdicate_timeout.ticking);
 

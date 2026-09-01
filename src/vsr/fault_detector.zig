@@ -35,16 +35,20 @@ interval_max: Duration,
 signal_last: Instant,
 interval_ewma: Duration,
 alert_factor: u32,
-last_unstable: Instant,
+last_heartbeat: Instant,
+heartbeat_unstable: Instant,
 
 const FaultDetector = @This();
 
-const alert_factor_step_denom = 2; // step_size is 1/alert_factor_step_denom
-const alert_factor_min = 2;
+const alert_factor_step_denom = 1; // step_size is 1/alert_factor_step_denom
+const alert_factor_min = 3;
 const alert_factor_max = 3;
-const alert_factor_init = 2;
+const alert_factor_init = 3;
 
-const stable_duration = Duration{ .ns = 100 * std.time.ns_per_s };
+const heartbeat_interval = Duration.ms(500);
+const heartbeat_stable_duration = Duration{ .ns = 10 * std.time.ns_per_s };
+const heartbeat_interval_min = Duration{ .ns = heartbeat_interval.ns * 99 / 100 };
+const heartbeat_interval_max = Duration{ .ns = heartbeat_interval.ns * 101 / 100 };
 
 pub fn init(options: struct {
     now: Instant,
@@ -63,8 +67,18 @@ pub fn init(options: struct {
         .signal_last = options.now,
         .interval_ewma = options.interval_max,
         .alert_factor = alert_factor_init * alert_factor_step_denom,
-        .last_unstable = options.now,
+        .last_heartbeat = options.now,
+        .heartbeat_unstable = options.now,
     };
+}
+
+pub fn heartbeat(detector: *FaultDetector, now: Instant) void {
+    const elapsed = detector.last_heartbeat.elapsed(now);
+    if (elapsed.ns < heartbeat_interval_min.ns or elapsed.ns > heartbeat_interval_max.ns) {
+        detector.heartbeat_unstable = now;
+    }
+    detector.last_heartbeat = now;
+    detector.signal(now);
 }
 
 pub fn signal(detector: *FaultDetector, now: Instant) void {
@@ -97,22 +111,25 @@ pub fn signal(detector: *FaultDetector, now: Instant) void {
 /// don't do that, because we don't know the actual underlying model. A simple rule like the above
 /// will not give us the optimal answer, but it should work in variety of different contexts!
 ///
-/// As a side effect, tracks stability: after `stable_duration` with no yellow/red/false-positive,
-/// `alert_factor` decays by 1 (down to `alert_factor_min`).
+/// As a side effect, tracks heartbeat stability: after `heartbeat_stable_duration` where every
+/// heartbeat arrived within `heartbeat_interval` ± 1%, `alert_factor` decays by 1 (down to
+/// `alert_factor_min`).
 pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red } {
     const past = detector.signal_last;
     assert(past.ns <= now.ns);
     const elapsed = past.elapsed(now);
 
     if (elapsed.ns *| 2 <= detector.interval_ewma.ns * 3) { // interval <= 1.5 * interval_ewma
-        if (detector.last_unstable.elapsed(now).ns >= stable_duration.ns) {
+        if (detector.heartbeat_unstable.elapsed(now).ns >= heartbeat_stable_duration.ns and
+            detector.last_heartbeat.elapsed(now).ns <= heartbeat_interval_max.ns)
+        {
             detector.alert_factor = @max(detector.alert_factor - 1, alert_factor_min * alert_factor_step_denom);
-            detector.last_unstable = now;
+            detector.heartbeat_unstable = now;
         }
         return .green;
     }
     assert(elapsed.ns >= detector.interval_ewma.ns);
-    detector.last_unstable = now;
+    detector.heartbeat_unstable = now;
     if (elapsed.ns *| alert_factor_step_denom <= detector.interval_ewma.ns * detector.alert_factor) { // interval <= alert_factor * interval_ewma
         return .yellow;
     }
@@ -135,7 +152,7 @@ pub fn reset(detector: *FaultDetector, now: Instant) void {
 /// Called when the primary confirms it is still alive after this replica sent `exit_view`.
 /// Does not affect the view-change protocol; only informs the failure detector.
 pub fn on_false_positive(detector: *FaultDetector, now: Instant) void {
-    detector.last_unstable = now;
+    detector.heartbeat_unstable = now;
     detector.alert_factor = @min(detector.alert_factor + 1, alert_factor_max * alert_factor_step_denom);
     // TODO: improve failure-detection accuracy using confirmed false positives.
 }
