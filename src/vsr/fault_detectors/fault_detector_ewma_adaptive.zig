@@ -19,7 +19,7 @@ fn alert_factor_x10_fn(ewma_interval: Duration, upper_bound: Duration, lower_bou
     const delta = AF_MAX - AF_MIN;
 
     // Factor is represented ×10.
-    return AF_MIN -
+    return AF_MAX -
         @as(u32, @intCast(
             (@as(u64, @intCast(distance)) * delta) /
                 @as(u64, @intCast(range))

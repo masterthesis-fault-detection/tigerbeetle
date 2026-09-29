@@ -28,6 +28,7 @@ const stdx = @import("stdx");
 const assert = std.debug.assert;
 const Instant = stdx.Instant;
 const Duration = stdx.Duration;
+const log = stdx.log.scoped(.fault_detector);
 
 interval_min: Duration,
 interval_max: Duration,
@@ -40,8 +41,8 @@ heartbeat_unstable: Instant,
 
 const FaultDetector = @This();
 
-const alert_factor_step_denom = 1; // step_size is 1/alert_factor_step_denom
-const alert_factor_min = 3;
+const alert_factor_step_denom = 2; // step_size is 1/alert_factor_step_denom
+const alert_factor_min = 2;
 const alert_factor_max = 3;
 const alert_factor_init = 3;
 
@@ -49,6 +50,26 @@ const heartbeat_interval = Duration.ms(500);
 const heartbeat_stable_duration = Duration{ .ns = 10 * std.time.ns_per_s };
 const heartbeat_interval_min = Duration{ .ns = heartbeat_interval.ns * 99 / 100 };
 const heartbeat_interval_max = Duration{ .ns = heartbeat_interval.ns * 101 / 100 };
+
+var log_constants_once = std.once(log_constants);
+
+fn log_constants() void {
+    log.info(
+        "alert_factor_step_denom={} alert_factor_min={} alert_factor_max={} alert_factor_init={} " ++
+            "heartbeat_interval={}ms heartbeat_stable_duration={}ms " ++
+            "heartbeat_interval_min={}ms heartbeat_interval_max={}ms",
+        .{
+            alert_factor_step_denom,
+            alert_factor_min,
+            alert_factor_max,
+            alert_factor_init,
+            heartbeat_interval.to_ms(),
+            heartbeat_stable_duration.to_ms(),
+            heartbeat_interval_min.to_ms(),
+            heartbeat_interval_max.to_ms(),
+        },
+    );
+}
 
 pub fn init(options: struct {
     now: Instant,
@@ -60,6 +81,7 @@ pub fn init(options: struct {
     assert(options.interval_max.ns <= 10 * std.time.ns_per_hour);
     assert(alert_factor_init >= alert_factor_min);
     assert(alert_factor_init <= alert_factor_max);
+    log_constants_once.call();
     return .{
         .interval_min = options.interval_min,
         .interval_max = options.interval_max,
@@ -123,7 +145,7 @@ pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red }
         if (detector.heartbeat_unstable.elapsed(now).ns >= heartbeat_stable_duration.ns and
             detector.last_heartbeat.elapsed(now).ns <= heartbeat_interval_max.ns)
         {
-            detector.alert_factor = @max(detector.alert_factor - 1, alert_factor_min * alert_factor_step_denom);
+            detector.set_alert_factor(@max(detector.alert_factor - 1, alert_factor_min * alert_factor_step_denom));
             detector.heartbeat_unstable = now;
         }
         return .green;
@@ -153,8 +175,14 @@ pub fn reset(detector: *FaultDetector, now: Instant) void {
 /// Does not affect the view-change protocol; only informs the failure detector.
 pub fn on_false_positive(detector: *FaultDetector, now: Instant) void {
     detector.heartbeat_unstable = now;
-    detector.alert_factor = @min(detector.alert_factor + 1, alert_factor_max * alert_factor_step_denom);
-    // TODO: improve failure-detection accuracy using confirmed false positives.
+    detector.set_alert_factor(@min(detector.alert_factor + 1, alert_factor_max * alert_factor_step_denom));
+}
+
+fn set_alert_factor(detector: *FaultDetector, new: u32) void {
+    const old = detector.alert_factor;
+    if (old == new) return;
+    detector.alert_factor = new;
+    log.info("alert_factor {} -> {}", .{ old, new });
 }
 
 fn ewma_add_duration(old: Duration, new: Duration) Duration {
