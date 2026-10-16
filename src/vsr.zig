@@ -737,6 +737,22 @@ pub const Timeout = struct {
         self.set_after_for_rtt_and_attempts(prng);
     }
 
+    pub fn backoff_fixed(self: *Timeout, after: u64) void {
+        assert(self.ticking);
+        assert(after > 0);
+
+        self.ticks = 0;
+        self.attempts +%= 1;
+        self.after_dynamic = after;
+
+        log.debug("{}: {s} backing off fixed after={} attempts={}", .{
+            self.id,
+            self.name,
+            after,
+            self.attempts,
+        });
+    }
+
     /// It's important to check that when fired() is acted on that the timeout is stopped/started,
     /// otherwise further ticks around the event loop may trigger a thundering herd of messages.
     pub fn fired(self: *const Timeout) bool {
@@ -894,6 +910,28 @@ test "exponential_backoff_with_jitter" {
         try std.testing.expect(ebwj >= min);
         try std.testing.expect(ebwj <= max);
     }
+}
+
+test "Timeout: fixed backoff resets to the same interval" {
+    var timeout = Timeout{
+        .name = "test",
+        .id = 1,
+        .after = 20,
+    };
+    timeout.start();
+    try std.testing.expectEqual(@as(u64, 20), timeout.after_dynamic.?);
+
+    timeout.ticks = timeout.after_dynamic.?;
+    try std.testing.expect(timeout.fired());
+    timeout.backoff_fixed(1);
+    try std.testing.expectEqual(@as(u64, 0), timeout.ticks);
+    try std.testing.expectEqual(@as(u64, 1), timeout.after_dynamic.?);
+
+    timeout.ticks = timeout.after_dynamic.?;
+    try std.testing.expect(timeout.fired());
+    timeout.backoff_fixed(1);
+    try std.testing.expectEqual(@as(u64, 0), timeout.ticks);
+    try std.testing.expectEqual(@as(u64, 1), timeout.after_dynamic.?);
 }
 
 pub const ClusterAddress = struct {

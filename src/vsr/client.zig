@@ -102,6 +102,9 @@ pub fn ClientType(
         /// Dynamically adjusted as a function of recent request round-trip time.
         request_timeout: vsr.Timeout,
 
+        /// If set, use this fixed interval for request retries instead of exponential backoff.
+        request_timeout_retry_interval_ticks: ?u64,
+
         /// The number of ticks before the client broadcasts a ping to the cluster.
         /// Used for end-to-end keepalive, and to discover a new primary between requests.
         ping_timeout: vsr.Timeout,
@@ -137,6 +140,9 @@ pub fn ClientType(
                 replica_count: u8,
                 aof_recovery: bool,
                 message_bus_options: MessageBus.Options,
+                request_timeout_after_ticks: u64 =
+                    constants.rtt_ticks * constants.rtt_multiple,
+                request_timeout_retry_interval_ticks: ?u64 = null,
                 /// When eviction_callback is null, the client will panic on eviction.
                 ///
                 /// When eviction_callback is non-null, it must `deinit()` the Client.
@@ -170,8 +176,9 @@ pub fn ClientType(
                 .request_timeout = .{
                     .name = "request_timeout",
                     .id = options.id,
-                    .after = constants.rtt_ticks * constants.rtt_multiple,
+                    .after = options.request_timeout_after_ticks,
                 },
+                .request_timeout_retry_interval_ticks = options.request_timeout_retry_interval_ticks,
                 .ping_timeout = .{
                     .name = "ping_timeout",
                     .id = options.id,
@@ -655,7 +662,11 @@ pub fn ClientType(
         // - the request message got dropped by the network
         // - there was a view change, and we are not speaking to the primary
         fn on_request_timeout(self: *Client) void {
-            self.request_timeout.backoff(&self.prng); // Reduce the load.
+            if (self.request_timeout_retry_interval_ticks) |retry_interval| {
+                self.request_timeout.backoff_fixed(retry_interval);
+            } else {
+                self.request_timeout.backoff(&self.prng); // Reduce the load.
+            }
 
             const message = self.request_inflight.?.message;
             assert(message.header.command == .request);

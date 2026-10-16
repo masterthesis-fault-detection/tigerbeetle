@@ -41,13 +41,13 @@ heartbeat_unstable: Instant,
 
 const FaultDetector = @This();
 
-const alert_factor_step_denom = 2; // step_size is 1/alert_factor_step_denom
-const alert_factor_min = 2;
+const alert_factor_step_denom = 1; // step_size is 1/alert_factor_step_denom
+const alert_factor_min = 3;
 const alert_factor_max = 3;
 const alert_factor_init = 3;
 
 const heartbeat_interval = Duration.ms(500);
-const heartbeat_stable_duration = Duration{ .ns = 10 * std.time.ns_per_s };
+const heartbeat_stable_duration = Duration{ .ns = 5 * std.time.ns_per_s };
 const heartbeat_interval_min = Duration{ .ns = heartbeat_interval.ns * 99 / 100 };
 const heartbeat_interval_max = Duration{ .ns = heartbeat_interval.ns * 101 / 100 };
 
@@ -162,13 +162,11 @@ pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red }
 pub fn reset(detector: *FaultDetector, now: Instant) void {
     const past = detector.signal_last;
     assert(past.ns <= now.ns);
-    const alert_factor = detector.alert_factor;
     detector.* = FaultDetector.init(.{
         .now = now,
         .interval_min = detector.interval_min,
         .interval_max = detector.interval_max,
     });
-    detector.alert_factor = alert_factor;
 }
 
 /// Called when the primary confirms it is still alive after this replica sent `exit_view`.
