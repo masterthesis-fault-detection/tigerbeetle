@@ -54,7 +54,7 @@ pub fn init(options: struct {
     };
 }
 pub fn heartbeat(detector: *FaultDetector, now: Instant) void {
-    detector.base.signal(now);
+    detector.signal(now);
 }
 
 pub fn on_false_positive(detector: *FaultDetector, now: Instant) void {

@@ -41,15 +41,16 @@ heartbeat_unstable: Instant,
 
 const FaultDetector = @This();
 
-const alert_factor_step_denom = 1; // step_size is 1/alert_factor_step_denom
-const alert_factor_min = 3;
+const alert_factor_step_denom = 2; // step_size is 1/alert_factor_step_denom
+const alert_factor_min = 2;
 const alert_factor_max = 3;
 const alert_factor_init = 3;
 
 const heartbeat_interval = Duration.ms(500);
 const heartbeat_stable_duration = Duration{ .ns = 5 * std.time.ns_per_s };
-const heartbeat_interval_min = Duration{ .ns = heartbeat_interval.ns * 99 / 100 };
-const heartbeat_interval_max = Duration{ .ns = heartbeat_interval.ns * 101 / 100 };
+// Stable heartbeats deviate from `heartbeat_interval` by at most
+// `interval_min * alert_factor * epsilon`, with epsilon = 1/heartbeat_deviation_denom.
+const heartbeat_deviation_denom = 10;
 
 var log_constants_once = std.once(log_constants);
 
@@ -57,7 +58,7 @@ fn log_constants() void {
     log.info(
         "alert_factor_step_denom={} alert_factor_min={} alert_factor_max={} alert_factor_init={} " ++
             "heartbeat_interval={}ms heartbeat_stable_duration={}ms " ++
-            "heartbeat_interval_min={}ms heartbeat_interval_max={}ms",
+            "heartbeat_deviation_denom={}",
         .{
             alert_factor_step_denom,
             alert_factor_min,
@@ -65,10 +66,28 @@ fn log_constants() void {
             alert_factor_init,
             heartbeat_interval.to_ms(),
             heartbeat_stable_duration.to_ms(),
-            heartbeat_interval_min.to_ms(),
-            heartbeat_interval_max.to_ms(),
+            heartbeat_deviation_denom,
         },
     );
+}
+
+/// Maximum accepted deviation of a heartbeat's inter-arrival time from `heartbeat_interval`:
+/// interval_min * alert_factor * epsilon (alert_factor is stored ×alert_factor_step_denom).
+fn heartbeat_tolerance(detector: *const FaultDetector) Duration {
+    return .{
+        .ns = @divFloor(
+            detector.interval_min.ns * detector.alert_factor,
+            alert_factor_step_denom * heartbeat_deviation_denom,
+        ),
+    };
+}
+
+fn heartbeat_interval_min(detector: *const FaultDetector) Duration {
+    return .{ .ns = heartbeat_interval.ns -| detector.heartbeat_tolerance().ns };
+}
+
+fn heartbeat_interval_max(detector: *const FaultDetector) Duration {
+    return .{ .ns = heartbeat_interval.ns + detector.heartbeat_tolerance().ns };
 }
 
 pub fn init(options: struct {
@@ -96,7 +115,9 @@ pub fn init(options: struct {
 
 pub fn heartbeat(detector: *FaultDetector, now: Instant) void {
     const elapsed = detector.last_heartbeat.elapsed(now);
-    if (elapsed.ns < heartbeat_interval_min.ns or elapsed.ns > heartbeat_interval_max.ns) {
+    if (elapsed.ns < detector.heartbeat_interval_min().ns or
+        elapsed.ns > detector.heartbeat_interval_max().ns)
+    {
         detector.heartbeat_unstable = now;
     }
     detector.last_heartbeat = now;
@@ -134,8 +155,8 @@ pub fn signal(detector: *FaultDetector, now: Instant) void {
 /// will not give us the optimal answer, but it should work in variety of different contexts!
 ///
 /// As a side effect, tracks heartbeat stability: after `heartbeat_stable_duration` where every
-/// heartbeat arrived within `heartbeat_interval` ± 1%, `alert_factor` decays by 1 (down to
-/// `alert_factor_min`).
+/// heartbeat arrived within `heartbeat_interval` ± `interval_min * alert_factor * epsilon`,
+/// `alert_factor` decays by 1 (down to `alert_factor_min`).
 pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red } {
     const past = detector.signal_last;
     assert(past.ns <= now.ns);
@@ -143,7 +164,7 @@ pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red }
 
     if (elapsed.ns *| 2 <= detector.interval_ewma.ns * 3) { // interval <= 1.5 * interval_ewma
         if (detector.heartbeat_unstable.elapsed(now).ns >= heartbeat_stable_duration.ns and
-            detector.last_heartbeat.elapsed(now).ns <= heartbeat_interval_max.ns)
+            detector.last_heartbeat.elapsed(now).ns <= detector.heartbeat_interval_max().ns)
         {
             detector.set_alert_factor(@max(detector.alert_factor - 1, alert_factor_min * alert_factor_step_denom));
             detector.heartbeat_unstable = now;

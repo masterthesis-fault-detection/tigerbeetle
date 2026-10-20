@@ -1629,7 +1629,7 @@ pub fn ReplicaType(
                             self.commit_fault.signal_last.elapsed(now),
                         },
                     );
-                    self.send_exit_view();
+                    self.send_exit_view(.suspicion);
                     if (self.event_callback) |hook| {
                         hook(self, .{ .suspicion_raised = .{ .view = self.view } });
                     }
@@ -2655,6 +2655,10 @@ pub fn ReplicaType(
 
             assert(self.backup());
             assert(message.header.view == self.view);
+            log.info("{}: on_false_positive: accepted (view={})", .{
+                self.log_prefix(),
+                self.view,
+            });
             self.commit_fault.on_false_positive(self.clock.monotonic());
         }
 
@@ -3787,7 +3791,7 @@ pub fn ReplicaType(
             if (self.standby()) return;
 
             if (self.exit_view_from_all_replicas.is_set(self.replica)) {
-                self.send_exit_view();
+                self.send_exit_view(.exit_view_message_timeout);
             }
         }
 
@@ -3796,7 +3800,7 @@ pub fn ReplicaType(
             assert(!self.solo());
             self.view_change_status_timeout.reset();
 
-            self.send_exit_view();
+            self.send_exit_view(.view_change_status_timeout);
         }
 
         fn on_join_view_message_timeout(self: *Replica) void {
@@ -8826,11 +8830,20 @@ pub fn ReplicaType(
             }
         }
 
-        fn send_exit_view(self: *Replica) void {
+        fn send_exit_view(
+            self: *Replica,
+            reason: enum { suspicion, exit_view_message_timeout, view_change_status_timeout },
+        ) void {
             assert(self.status == .normal or self.status == .view_change);
             assert(!self.solo());
 
             if (self.standby()) return;
+
+            log.info("{}: send_exit_view: view={} reason={s}", .{
+                self.log_prefix(),
+                self.view,
+                @tagName(reason),
+            });
 
             const header = Header.ExitView{
                 .command = .exit_view,
