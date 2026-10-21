@@ -10051,7 +10051,7 @@ pub fn ReplicaType(
             assert(self.log_view >= self.superblock.working.vsr_state.checkpoint.header.view);
 
             self.status = .normal;
-            self.commit_fault.reset(self.clock.monotonic());
+            self.commit_fault.reset(self.clock.monotonic(), self.view);
 
             assert(!self.prepare_timeout.ticking);
             assert(!self.primary_abdicate_timeout.ticking);
@@ -10130,7 +10130,7 @@ pub fn ReplicaType(
             );
 
             self.status = .normal;
-            self.commit_fault.reset(self.clock.monotonic());
+            self.commit_fault.reset(self.clock.monotonic(), view_new);
 
             if (self.log_view == view_new) {
                 // Recovering to the same view we lost the head in.
@@ -10175,7 +10175,7 @@ pub fn ReplicaType(
             if (self.event_callback) |hook| {
                 hook(self, .{ .view_change_completed = .{ .view = view_new } });
             }
-            self.commit_fault.reset(self.clock.monotonic());
+            self.commit_fault.reset(self.clock.monotonic(), view_new);
 
             if (self.primary()) {
                 log.info(

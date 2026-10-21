@@ -44,10 +44,13 @@ const FaultDetector = @This();
 const alert_factor_step_denom = 2; // step_size is 1/alert_factor_step_denom
 const alert_factor_min = 2;
 const alert_factor_max = 3;
-const alert_factor_init = 3;
+const alert_factor_init = 2; // Start value, also used for resets during cluster startup.
+// Resets into views up to this one belong to cluster startup (the startup view change leads to
+// view 1) and keep `alert_factor_init`; later resets use `alert_factor_max`.
+const startup_view_max = 1;
 
 const heartbeat_interval = Duration.ms(500);
-const heartbeat_stable_duration = Duration{ .ns = 5 * std.time.ns_per_s };
+const heartbeat_stable_duration = Duration{ .ns = 50 * std.time.ns_per_s };
 // Stable heartbeats deviate from `heartbeat_interval` by at most
 // `interval_min * alert_factor * epsilon`, with epsilon = 1/heartbeat_deviation_denom.
 const heartbeat_deviation_denom = 10;
@@ -58,7 +61,7 @@ fn log_constants() void {
     log.info(
         "alert_factor_step_denom={} alert_factor_min={} alert_factor_max={} alert_factor_init={} " ++
             "heartbeat_interval={}ms heartbeat_stable_duration={}ms " ++
-            "heartbeat_deviation_denom={}",
+            "heartbeat_deviation_denom={} startup_view_max={}",
         .{
             alert_factor_step_denom,
             alert_factor_min,
@@ -67,6 +70,7 @@ fn log_constants() void {
             heartbeat_interval.to_ms(),
             heartbeat_stable_duration.to_ms(),
             heartbeat_deviation_denom,
+            startup_view_max,
         },
     );
 }
@@ -180,7 +184,7 @@ pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red }
     return .red;
 }
 
-pub fn reset(detector: *FaultDetector, now: Instant) void {
+pub fn reset(detector: *FaultDetector, now: Instant, view: u32) void {
     const past = detector.signal_last;
     assert(past.ns <= now.ns);
     detector.* = FaultDetector.init(.{
@@ -188,11 +192,17 @@ pub fn reset(detector: *FaultDetector, now: Instant) void {
         .interval_min = detector.interval_min,
         .interval_max = detector.interval_max,
     });
+    if (view > startup_view_max) {
+        detector.alert_factor = alert_factor_max * alert_factor_step_denom;
+    }
+    log.info("reset: view={} alert_factor={}", .{ view, detector.alert_factor });
 }
 
 /// Called when the primary confirms it is still alive after this replica sent `exit_view`.
 /// Does not affect the view-change protocol; only informs the failure detector.
 pub fn on_false_suspicion(detector: *FaultDetector, now: Instant) void {
+    // _ = detector;
+    // _ = now;
     detector.heartbeat_unstable = now;
     detector.set_alert_factor(@min(detector.alert_factor + 1, alert_factor_max * alert_factor_step_denom));
 }

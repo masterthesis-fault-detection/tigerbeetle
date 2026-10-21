@@ -109,7 +109,8 @@ pub fn tardy(detector: *FaultDetector, now: Instant) enum { green, yellow, red }
     return .red;
 }
 
-pub fn reset(detector: *FaultDetector, now: Instant) void {
+pub fn reset(detector: *FaultDetector, now: Instant, view: u32) void {
+    _ = view;
     const past = detector.signal_last;
     assert(past.ns <= now.ns);
     detector.* = FaultDetector.init(.{
