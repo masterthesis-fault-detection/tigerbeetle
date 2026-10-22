@@ -192,7 +192,7 @@ pub fn reset(detector: *FaultDetector, now: Instant) void {
 
 /// Called when the primary confirms it is still alive after this replica sent `exit_view`.
 /// Does not affect the view-change protocol; only informs the failure detector.
-pub fn on_false_positive(detector: *FaultDetector, now: Instant) void {
+pub fn on_false_suspicion(detector: *FaultDetector, now: Instant) void {
     detector.heartbeat_unstable = now;
     detector.set_alert_factor(@min(detector.alert_factor + 1, alert_factor_max * alert_factor_step_denom));
 }

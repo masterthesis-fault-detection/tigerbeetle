@@ -88,7 +88,7 @@ pub const Header = extern struct {
             .reply => Reply,
             .commit => Commit,
             .exit_view => ExitView,
-            .false_positive => FalsePositive,
+            .false_suspicion => FalseSuspicion,
             .join_view => JoinView,
             .view => View,
             .get_view => GetView,
@@ -221,7 +221,7 @@ pub const Header = extern struct {
             .prepare_ok,
             .commit,
             .exit_view,
-            .false_positive,
+            .false_suspicion,
             .join_view,
             .view,
             .get_view,
@@ -1136,7 +1136,7 @@ pub const Header = extern struct {
         }
     };
 
-    pub const FalsePositive = extern struct {
+    pub const FalseSuspicion = extern struct {
         checksum: u128 = 0,
         checksum_padding: u128 = 0,
         checksum_body: u128 = 0,
@@ -1166,7 +1166,7 @@ pub const Header = extern struct {
         pub const format = HeaderFunctionsType(@This()).format;
 
         fn invalid_header(self: *const @This()) ?[]const u8 {
-            assert(self.command == .false_positive);
+            assert(self.command == .false_suspicion);
             if (self.size != @sizeOf(Header)) return "size != @sizeOf(Header)";
             if (self.checksum_body != checksum_body_empty) return "checksum_body != expected";
             if (self.release.value != 0) return "release != 0";

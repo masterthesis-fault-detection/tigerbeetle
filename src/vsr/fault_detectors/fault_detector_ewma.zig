@@ -57,10 +57,10 @@ pub fn heartbeat(detector: *FaultDetector, now: Instant) void {
     detector.signal(now);
 }
 
-pub fn on_false_positive(detector: *FaultDetector, now: Instant) void {
+pub fn on_false_suspicion(detector: *FaultDetector, now: Instant) void {
     _ = detector;
     _ = now;
-    // No-op. The adaptive fault detector does not need to do anything on false positive.
+    // No-op. The adaptive fault detector does not need to do anything on a false suspicion.
     return;
 }
 

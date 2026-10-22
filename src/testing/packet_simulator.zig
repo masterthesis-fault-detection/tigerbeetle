@@ -426,21 +426,21 @@ pub fn PacketSimulatorType(comptime Packet: type) type {
         ) void {
             const command = self.packet_command(packet);
 
-            // `false_positive` is advisory FD feedback only. Delivering it on the normal
+            // `false_suspicion` is advisory FD feedback only. Delivering it on the normal
             // simulated path would (1) compete for path_maximum_capacity and evict protocol
             // messages such as commits, and (2) consume PRNG draws for delay/loss/eviction,
             // diverging the entire VOPR trajectory. Keep partition filters, skip the rest.
-            if (command == .false_positive) {
+            if (command == .false_suspicion) {
                 const link = &self.links[self.path_index(path)];
                 if (link.should_drop(packet, command)) {
-                    log.debug("dropped false_positive (link filter): from={} to={}", .{
+                    log.debug("dropped false_suspicion (link filter): from={} to={}", .{
                         path.source,
                         path.target,
                     });
                     self.packet_deinit(packet);
                     return;
                 }
-                log.debug("delivering false_positive out-of-band from={} to={}", .{
+                log.debug("delivering false_suspicion out-of-band from={} to={}", .{
                     path.source,
                     path.target,
                 });

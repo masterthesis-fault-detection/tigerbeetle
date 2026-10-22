@@ -1814,7 +1814,7 @@ pub fn ReplicaType(
                 .reply => |m| self.on_reply(m),
                 .commit => |m| self.on_commit(m),
                 .exit_view => |m| self.on_exit_view(m),
-                .false_positive => |m| self.on_false_positive(m),
+                .false_suspicion => |m| self.on_false_suspicion(m),
                 .join_view => |m| self.on_join_view(m),
                 .view => |m| self.on_view(m),
                 .get_view => |m| self.on_get_view(m),
@@ -2570,7 +2570,7 @@ pub fn ReplicaType(
                 message.header.replica != self.replica and
                 !self.exit_view_from_all_replicas.is_set(message.header.replica))
             {
-                self.send_false_positive(message.header.replica);
+                self.send_false_suspicion(message.header.replica);
             }
 
             // Wait until we have a view-change quorum of messages (possibly including ourself).
@@ -2612,18 +2612,18 @@ pub fn ReplicaType(
 
         /// Advisory failure-detector feedback from the primary: our `exit_view` was a false
         /// positive because the primary is still alive. Does not affect view-change state.
-        fn on_false_positive(self: *Replica, message: *const Message.FalsePositive) void {
-            assert(message.header.command == .false_positive);
+        fn on_false_suspicion(self: *Replica, message: *const Message.FalseSuspicion) void {
+            assert(message.header.command == .false_suspicion);
 
             if (self.standby()) {
-                log.warn("{}: on_false_positive: misdirected message (standby)", .{
+                log.warn("{}: on_false_suspicion: misdirected message (standby)", .{
                     self.log_prefix(),
                 });
                 return;
             }
 
             if (self.status != .normal) {
-                log.debug("{}: on_false_positive: ignoring (status={})", .{
+                log.debug("{}: on_false_suspicion: ignoring (status={})", .{
                     self.log_prefix(),
                     self.status,
                 });
@@ -2631,14 +2631,14 @@ pub fn ReplicaType(
             }
 
             if (self.primary()) {
-                log.warn("{}: on_false_positive: misdirected message (primary)", .{
+                log.warn("{}: on_false_suspicion: misdirected message (primary)", .{
                     self.log_prefix(),
                 });
                 return;
             }
 
             if (message.header.view != self.view) {
-                log.debug("{}: on_false_positive: ignoring (view={} message.view={})", .{
+                log.debug("{}: on_false_suspicion: ignoring (view={} message.view={})", .{
                     self.log_prefix(),
                     self.view,
                     message.header.view,
@@ -2647,7 +2647,7 @@ pub fn ReplicaType(
             }
 
             if (message.header.replica != self.primary_index(self.view)) {
-                log.warn("{}: on_false_positive: ignoring (not from primary)", .{
+                log.warn("{}: on_false_suspicion: ignoring (not from primary)", .{
                     self.log_prefix(),
                 });
                 return;
@@ -2655,11 +2655,11 @@ pub fn ReplicaType(
 
             assert(self.backup());
             assert(message.header.view == self.view);
-            log.info("{}: on_false_positive: accepted (view={})", .{
+            log.info("{}: on_false_suspicion: accepted (view={})", .{
                 self.log_prefix(),
                 self.view,
             });
-            self.commit_fault.on_false_positive(self.clock.monotonic());
+            self.commit_fault.on_false_suspicion(self.clock.monotonic());
         }
 
         /// JV serves two purposes:
@@ -8860,7 +8860,7 @@ pub fn ReplicaType(
             }
         }
 
-        fn send_false_positive(self: *Replica, replica: u8) void {
+        fn send_false_suspicion(self: *Replica, replica: u8) void {
             assert(self.status == .normal);
             assert(self.primary());
             assert(!self.primary_abdicating);
@@ -8869,8 +8869,8 @@ pub fn ReplicaType(
             assert(replica != self.replica);
             assert(replica < self.replica_count);
 
-            self.send_header_to_replica(replica, @bitCast(Header.FalsePositive{
-                .command = .false_positive,
+            self.send_header_to_replica(replica, @bitCast(Header.FalseSuspicion{
+                .command = .false_suspicion,
                 .cluster = self.cluster,
                 .replica = self.replica,
                 .view = self.view,
@@ -9151,7 +9151,7 @@ pub fn ReplicaType(
                 .prepare,
                 .prepare_ok,
                 .exit_view,
-                .false_positive,
+                .false_suspicion,
                 .join_view,
                 .view,
                 .headers,
@@ -9316,7 +9316,7 @@ pub fn ReplicaType(
                     assert(header.replica == self.replica);
                     assert(header.release.value == vsr.Release.zero.value);
                 },
-                .false_positive => |header| {
+                .false_suspicion => |header| {
                     assert(!self.standby());
                     assert(self.status == .normal);
                     assert(self.primary());
