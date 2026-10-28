@@ -352,6 +352,9 @@ pub fn ContextType(
                         .time = time,
                     },
                     .eviction_callback = client_eviction_callback,
+                    // Retry every tick after the initial request timeout, so that E2E latency
+                    // tracks cluster unavailability instead of exponential backoff.
+                    .request_timeout_retry_interval_ticks = 1,
                 },
             ) catch |err| {
                 log.err("{}: failed to initialize Client: {s}", .{

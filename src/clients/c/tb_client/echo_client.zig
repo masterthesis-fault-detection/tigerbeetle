@@ -42,11 +42,13 @@ pub fn EchoClientType(comptime MessageBus: type) type {
                     eviction: *const Message.Eviction,
                 ) void = null,
                 aof_recovery: bool,
+                request_timeout_retry_interval_ticks: ?u64 = null,
             },
         ) !EchoClient {
             _ = allocator;
             _ = options.replica_count;
             _ = options.message_bus_options;
+            _ = options.request_timeout_retry_interval_ticks;
             assert(!options.aof_recovery);
 
             return EchoClient{
