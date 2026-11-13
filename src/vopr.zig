@@ -1391,6 +1391,7 @@ pub const Simulator = struct {
         return release_max;
     }
 
+    /// True if target is down or partitioned from observer in either direction.
     fn primary_unreachable_from(cluster: *const Cluster, observer: u8, target: u8) bool {
         if (cluster.replica_health[target] == .down) return true;
 
@@ -1406,6 +1407,7 @@ pub const Simulator = struct {
             cluster.network.link_filter(path_from_target).bits.count() == 0;
     }
 
+    /// Record the tick at which each (observer, target) pair became unreachable.
     fn sync_unreachable_since(simulator: *Simulator) void {
         const member_count =
             simulator.options.cluster.replica_count + simulator.options.cluster.standby_count;
@@ -1430,6 +1432,7 @@ pub const Simulator = struct {
         }
     }
 
+    /// Classify each suspicion as true or false positive and record when its view change completes.
     fn on_view_change_event(
         cluster: *Cluster,
         replica_index: u8,
@@ -1631,6 +1634,7 @@ pub const Simulator = struct {
         }
     }
 
+    /// Print the `VOPR_METRICS` line and statistics parsed by the DST evaluation.
     fn print_view_change_metrics(simulator: *const Simulator, seed: u64) void {
         const total_count = simulator.view_change_events.items.len;
         var tp_values = std.ArrayList(u64).init(std.heap.page_allocator);

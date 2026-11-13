@@ -113,6 +113,7 @@ pub fn init(options: struct {
     };
 }
 
+/// Signal from a heartbeat; also tracks whether heartbeats arrive on schedule.
 pub fn heartbeat(detector: *FaultDetector, now: Instant) void {
     const elapsed = detector.last_heartbeat.elapsed(now);
     if (elapsed.ns < detector.heartbeat_interval_min().ns or

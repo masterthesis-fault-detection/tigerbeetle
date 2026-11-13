@@ -8,6 +8,7 @@ const AF_MIN: u32 = 20; // 2.0
 const AF_MAX: u32 = 30; // 3.0
 const HEARTBEAT_INTERVAL: Duration = .ms(500);
 
+/// Alert factor ×10, interpolated linearly from AF_MAX at lower_bound to AF_MIN at upper_bound.
 fn alert_factor_x10_fn(ewma_interval: Duration, upper_bound: Duration, lower_bound: Duration) u32 {
     // Avoid float similar to yellow threshold calculation. The alert factor is scaled by 10 to avoid float.
     if (ewma_interval.ns >= upper_bound.ns) return AF_MIN;

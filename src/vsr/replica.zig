@@ -2611,7 +2611,7 @@ pub fn ReplicaType(
         }
 
         /// Advisory failure-detector feedback from the primary: our `exit_view` was a false
-        /// positive because the primary is still alive. Does not affect view-change state.
+        /// suspicion because the primary is still alive. Does not affect view-change state.
         fn on_false_suspicion(self: *Replica, message: *const Message.FalseSuspicion) void {
             assert(message.header.command == .false_suspicion);
 

@@ -426,10 +426,9 @@ pub fn PacketSimulatorType(comptime Packet: type) type {
         ) void {
             const command = self.packet_command(packet);
 
-            // `false_suspicion` is advisory FD feedback only. Delivering it on the normal
-            // simulated path would (1) compete for path_maximum_capacity and evict protocol
-            // messages such as commits, and (2) consume PRNG draws for delay/loss/eviction,
-            // diverging the entire VOPR trajectory. Keep partition filters, skip the rest.
+            // `false_suspicion` is delivered out-of-band (only partition filters apply), so it
+            // neither takes link capacity from protocol messages nor consumes PRNG draws, which
+            // would change the VOPR trajectory.
             if (command == .false_suspicion) {
                 const link = &self.links[self.path_index(path)];
                 if (link.should_drop(packet, command)) {
